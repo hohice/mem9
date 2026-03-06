@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -84,11 +85,16 @@ func (c *Client) Complete(ctx context.Context, system, user string) (string, err
 }
 
 // CompleteJSON sends a chat completion request with response_format: json_object.
-// This instructs the model to return valid JSON, improving reliability with
-// non-OpenAI providers (Ollama, vLLM, etc.) that may otherwise wrap JSON in
-// markdown fences or explanatory text.
+// This instructs the model to return valid JSON, improving reliability.
+// If the provider returns HTTP 400 (e.g., Ollama, some vLLM builds that don't support
+// response_format), it automatically retries without the parameter.
 func (c *Client) CompleteJSON(ctx context.Context, system, user string) (string, error) {
-	return c.complete(ctx, system, user, &responseFormat{Type: "json_object"})
+	result, err := c.complete(ctx, system, user, &responseFormat{Type: "json_object"})
+	if err != nil && strings.Contains(err.Error(), "400") {
+		slog.Warn("LLM rejected response_format:json_object, retrying without it")
+		return c.complete(ctx, system, user, nil)
+	}
+	return result, err
 }
 
 func (c *Client) complete(ctx context.Context, system, user string, respFmt *responseFormat) (string, error) {

@@ -108,6 +108,10 @@ func (s *IngestService) Ingest(ctx context.Context, agentName string, req Ingest
 		return &IngestResult{Status: "complete"}, nil
 	}
 
+	// Cap conversation size to avoid blowing LLM token limits.
+	const maxConversationRunes = 32000
+	formatted = truncateRunes(formatted, maxConversationRunes)
+
 	result := &IngestResult{Status: "complete"}
 
 	wantDigest := mode == ModeSmart || mode == ModeDigest
@@ -269,7 +273,11 @@ Return ONLY valid JSON. No markdown fences.
 
 	var embedding []float32
 	if s.autoModel == "" && s.embedder != nil {
-		embedding, _ = s.embedder.Embed(ctx, parsed.Summary)
+		var embedErr error
+		embedding, embedErr = s.embedder.Embed(ctx, parsed.Summary)
+		if embedErr != nil {
+			slog.Warn("embedding failed for digest", "err", embedErr)
+		}
 	}
 
 	now := time.Now()
@@ -577,18 +585,42 @@ func (s *IngestService) fetchExistingForReconcile(ctx context.Context, agentID s
 
 	if s.embedder == nil && s.autoModel == "" {
 		// No vector search available — fall back to listing.
-		filter := domain.MemoryFilter{
+		// Insights scoped to agent; pinned is space-level (no AgentID filter).
+		insightMems, _, insightErr := s.memories.List(ctx, domain.MemoryFilter{
 			State:      "active",
-			MemoryType: "insight,pinned",
+			MemoryType: "insight",
 			AgentID:    agentID,
 			Limit:      reconcileMemoryCap,
+		})
+		pinnedMems, _, pinnedErr := s.memories.List(ctx, domain.MemoryFilter{
+			State:      "active",
+			MemoryType: "pinned",
+			Limit:      reconcileMemoryCap,
+		})
+		if insightErr != nil && pinnedErr != nil {
+			return nil, fmt.Errorf("list insights: %w; list pinned: %w", insightErr, pinnedErr)
 		}
-		memories, _, err := s.memories.List(ctx, filter)
-		if err != nil {
-			return nil, err
+		if insightErr != nil {
+			slog.Warn("failed to list insight memories for reconcile", "err", insightErr)
 		}
-		for i := range memories {
-			memories[i].Content = truncateRunes(memories[i].Content, reconcileContentMaxLen)
+		if pinnedErr != nil {
+			slog.Warn("failed to list pinned memories for reconcile", "err", pinnedErr)
+		}
+		// Merge and cap at reconcileMemoryCap.
+		seen := make(map[string]struct{})
+		var memories []domain.Memory
+		for _, list := range [][]domain.Memory{insightMems, pinnedMems} {
+			for _, m := range list {
+				if _, ok := seen[m.ID]; ok {
+					continue
+				}
+				seen[m.ID] = struct{}{}
+				m.Content = truncateRunes(m.Content, reconcileContentMaxLen)
+				memories = append(memories, m)
+				if len(memories) >= reconcileMemoryCap {
+					return memories, nil
+				}
+			}
 		}
 		return memories, nil
 	}
@@ -608,6 +640,16 @@ func (s *IngestService) fetchExistingForReconcile(ctx context.Context, agentID s
 	}
 
 	for _, fact := range facts {
+		// Pre-compute embedding once per fact (not per filter).
+		var vec []float32
+		if s.autoModel == "" {
+			var embedErr error
+			vec, embedErr = s.embedder.Embed(ctx, fact)
+			if embedErr != nil {
+				slog.Warn("embedding failed for fact during reconcile", "err", embedErr)
+				continue
+			}
+		}
 		// Search agent-scoped insights and space-level pinned memories separately, then merge.
 		for _, filter := range []domain.MemoryFilter{insightFilter, pinnedFilter} {
 			var matches []domain.Memory
@@ -616,11 +658,6 @@ func (s *IngestService) fetchExistingForReconcile(ctx context.Context, agentID s
 			if s.autoModel != "" {
 				matches, err = s.memories.AutoVectorSearch(ctx, fact, filter, 10)
 			} else {
-				vec, embedErr := s.embedder.Embed(ctx, fact)
-				if embedErr != nil {
-					slog.Warn("embedding failed for fact during reconcile", "err", embedErr)
-					continue
-				}
 				matches, err = s.memories.VectorSearch(ctx, vec, filter, 10)
 			}
 
