@@ -323,4 +323,127 @@ describe("DeepAnalysisTab", () => {
       expect(mocks.deleteDeepAnalysisReport).toHaveBeenCalledWith("space-1", "dar_completed");
     });
   });
+
+  it("renders legacy deep-analysis payloads without crashing when timeSpan and wrapped highlights are missing", () => {
+    mocks.useDeepAnalysisReports.mockReturnValue({
+      reports: [
+        {
+          id: "dar_legacy",
+          status: "COMPLETED",
+          stage: "COMPLETE",
+          progressPercent: 100,
+          lang: "en",
+          timezone: "Asia/Shanghai",
+          memoryCount: 4040,
+          requestedAt: "2026-03-28T10:13:05.010Z",
+          startedAt: "2026-03-28T10:13:53.760Z",
+          completedAt: "2026-03-28T10:15:28.107Z",
+          errorCode: null,
+          errorMessage: null,
+          preview: {
+            generatedAt: "2026-03-28T10:15:28.107Z",
+            summary: "Bosn operates as a high-velocity ENFP product leader and engineering lead at PingCAP.",
+            topThemes: [],
+            keyRecommendations: [
+              "Collapse repeated memories into stronger canonical entries and clean up duplicate drift regularly.",
+            ],
+          },
+        },
+      ],
+      selectedReport: {
+        id: "dar_legacy",
+        status: "COMPLETED",
+        stage: "COMPLETE",
+        progressPercent: 100,
+        lang: "en",
+        timezone: "Asia/Shanghai",
+        memoryCount: 4040,
+        requestedAt: "2026-03-28T10:13:05.010Z",
+        startedAt: "2026-03-28T10:13:53.760Z",
+        completedAt: "2026-03-28T10:15:28.107Z",
+        errorCode: null,
+        errorMessage: null,
+        preview: {
+          generatedAt: "2026-03-28T10:15:28.107Z",
+          summary: "Bosn operates as a high-velocity ENFP product leader and engineering lead at PingCAP.",
+          topThemes: [],
+          keyRecommendations: [
+            "Collapse repeated memories into stronger canonical entries and clean up duplicate drift regularly.",
+          ],
+        },
+        report: {
+          overview: {
+            memoryCount: 4040,
+            deduplicatedMemoryCount: 3635,
+            analysisScope: "Deep synthesis of operational logs and persona signals across 4k+ memories.",
+          },
+          persona: {
+            summary: "Bosn operates as a high-velocity ENFP product leader and engineering lead at PingCAP.",
+            workingStyle: ["Enforces explicit approval for system updates and gateway restarts"],
+            preferences: ["Official stable releases only; ignore beta versions for checks"],
+          },
+          themeLandscape: [
+            {
+              name: "healthcheck skill execution",
+              count: 320,
+              description: "Dominant operational theme involving model self-checks and security audits.",
+            },
+          ],
+          entities: {
+            people: [
+              {
+                label: "Bosn",
+                role: "Product Design Lead / Engineering Lead",
+                count: 196,
+                evidenceMemoryIds: ["mem_1"],
+              },
+            ],
+            teams: [
+              {
+                label: "PingCAP Engineering",
+                context: "TiDB Cloud infrastructure and Databend development",
+                evidenceMemoryIds: ["mem_2"],
+              },
+            ],
+            projects: [],
+            tools: [],
+            places: [],
+          },
+          relationships: [],
+          discoveries: [],
+          quality: {
+            lowQualityExamples: [
+              { memoryId: "mem_3", reason: "Very short or low-information memory" },
+              { memoryId: "mem_4", reason: "Very short or low-information memory" },
+            ],
+            coverageGaps: [
+              "Limited detail on specific TiDB Cloud cluster configurations beyond spend limits",
+            ],
+            duplicateMemoryCount: 30,
+          },
+          recommendations: [
+            "Collapse repeated memories into stronger canonical entries and clean up duplicate drift regularly.",
+          ],
+          productSignals: {
+            candidateNodes: [],
+            candidateEdges: [],
+            searchSeeds: [],
+          },
+        },
+      },
+      selectedReportId: "dar_legacy",
+      setSelectedReportId: vi.fn(),
+      inlineError: null,
+      clearInlineError: vi.fn(),
+      isLoading: false,
+      isCreating: false,
+      createReport: vi.fn(async () => undefined),
+    });
+
+    render(<DeepAnalysisTab spaceId="space-1" active />);
+
+    expect(screen.getByText("healthcheck skill execution")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "PingCAP Engineering" })).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+  });
 });

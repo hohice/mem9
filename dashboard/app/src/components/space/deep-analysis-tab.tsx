@@ -36,6 +36,7 @@ import type {
   DeepAnalysisEvidenceHighlight,
   DeepAnalysisRelationship,
   DeepAnalysisReportDetail,
+  DeepAnalysisThemeItem,
 } from "@/types/analysis";
 
 const TERMINAL_REPORT_STATUSES = new Set(["COMPLETED", "FAILED"]);
@@ -47,6 +48,113 @@ function formatDateTime(value: string, locale: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function toStringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+}
+
+function normalizeEntityGroups(value: unknown): DeepAnalysisEntityGroup[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+
+    const label = toStringOrNull(item.label);
+    if (!label) {
+      return [];
+    }
+
+    const evidenceMemoryIds = toStringArray(item.evidenceMemoryIds);
+    return [{
+      label,
+      count: isFiniteNumber(item.count) ? item.count : Math.max(evidenceMemoryIds.length, 1),
+      evidenceMemoryIds,
+    }];
+  });
+}
+
+function normalizeThemeHighlights(value: unknown): DeepAnalysisThemeItem[] {
+  const rawItems = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.highlights)
+      ? value.highlights
+      : [];
+
+  return rawItems.flatMap((item) => {
+    if (!isRecord(item)) {
+      return [];
+    }
+
+    const name = toStringOrNull(item.name);
+    if (!name) {
+      return [];
+    }
+
+    return [{
+      name,
+      count: isFiniteNumber(item.count) ? item.count : 0,
+      description: toStringOrNull(item.description) ?? "",
+    }];
+  });
+}
+
+function getOverviewTimeSpan(report: DeepAnalysisReportDetail): {
+  start: string | null;
+  end: string | null;
+} {
+  const overview = report.report?.overview as
+    | { timeSpan?: { start?: string | null; end?: string | null } }
+    | undefined;
+
+  return {
+    start: overview?.timeSpan?.start ?? null,
+    end: overview?.timeSpan?.end ?? null,
+  };
+}
+
+function getDuplicateRatio(report: DeepAnalysisReportDetail): number {
+  const quality = report.report?.quality as
+    | { duplicateRatio?: number; duplicateMemoryCount?: number }
+    | undefined;
+  if (isFiniteNumber(quality?.duplicateRatio)) {
+    return quality.duplicateRatio;
+  }
+
+  const duplicateMemoryCount = isFiniteNumber(quality?.duplicateMemoryCount)
+    ? quality.duplicateMemoryCount
+    : 0;
+  const baseCount = report.report?.overview.memoryCount ?? report.memoryCount;
+  return baseCount > 0 ? duplicateMemoryCount / baseCount : 0;
+}
+
+function getNoisyMemoryCount(report: DeepAnalysisReportDetail): number {
+  const quality = report.report?.quality as
+    | { noisyMemoryCount?: number; lowQualityExamples?: unknown }
+    | undefined;
+  if (isFiniteNumber(quality?.noisyMemoryCount)) {
+    return quality.noisyMemoryCount;
+  }
+
+  return Array.isArray(quality?.lowQualityExamples) ? quality.lowQualityExamples.length : 0;
 }
 
 function countDuplicateMemories(
@@ -379,6 +487,24 @@ function ReportDetail({
 }) {
   const { t, i18n } = useTranslation();
   const duplicateCount = countDuplicateMemories(report, removedDuplicateIds);
+  const overviewTimeSpan = getOverviewTimeSpan(report);
+  const themeHighlights = normalizeThemeHighlights(report.report?.themeLandscape);
+  const entities = report.report?.entities as
+    | {
+      people?: unknown;
+      teams?: unknown;
+      projects?: unknown;
+      tools?: unknown;
+      places?: unknown;
+    }
+    | undefined;
+  const normalizedEntityGroups = [
+    { label: t("deep_analysis.entities.people"), items: normalizeEntityGroups(entities?.people) },
+    { label: t("deep_analysis.entities.teams"), items: normalizeEntityGroups(entities?.teams) },
+    { label: t("deep_analysis.entities.projects"), items: normalizeEntityGroups(entities?.projects) },
+    { label: t("deep_analysis.entities.tools"), items: normalizeEntityGroups(entities?.tools) },
+    { label: t("deep_analysis.entities.places"), items: normalizeEntityGroups(entities?.places) },
+  ];
 
   return (
     <div className="space-y-4">
@@ -408,8 +534,8 @@ function ReportDetail({
           </div>
           <div className="rounded-xl border border-border/70 border-l-2 border-l-primary/25 bg-popover/70 px-3 py-3">
             <div className="text-sm font-semibold text-foreground">
-              {report.report?.overview.timeSpan.start
-                ? formatDateTime(report.report.overview.timeSpan.start, i18n.language)
+              {overviewTimeSpan.start
+                ? formatDateTime(overviewTimeSpan.start, i18n.language)
                 : "—"}
             </div>
             <div className="mt-1 text-[11px] text-soft-foreground">
@@ -418,8 +544,8 @@ function ReportDetail({
           </div>
           <div className="rounded-xl border border-border/70 border-l-2 border-l-primary/25 bg-popover/70 px-3 py-3">
             <div className="text-sm font-semibold text-foreground">
-              {report.report?.overview.timeSpan.end
-                ? formatDateTime(report.report.overview.timeSpan.end, i18n.language)
+              {overviewTimeSpan.end
+                ? formatDateTime(overviewTimeSpan.end, i18n.language)
                 : "—"}
             </div>
             <div className="mt-1 text-[11px] text-soft-foreground">
@@ -486,7 +612,7 @@ function ReportDetail({
 
       <ReportSection title={t("deep_analysis.sections.themes")}>
         <div className="grid gap-3 md:grid-cols-2">
-          {(report.report?.themeLandscape.highlights ?? []).map((item, idx) => (
+          {themeHighlights.map((item, idx) => (
             <div key={item.name} className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-sm font-medium text-foreground">
@@ -519,13 +645,7 @@ function ReportDetail({
 
       <ReportSection title={t("deep_analysis.sections.entities")}>
         <EntityWordCloud
-          groups={[
-            { label: t("deep_analysis.entities.people"), items: report.report?.entities.people ?? [] },
-            { label: t("deep_analysis.entities.teams"), items: report.report?.entities.teams ?? [] },
-            { label: t("deep_analysis.entities.projects"), items: report.report?.entities.projects ?? [] },
-            { label: t("deep_analysis.entities.tools"), items: report.report?.entities.tools ?? [] },
-            { label: t("deep_analysis.entities.places"), items: report.report?.entities.places ?? [] },
-          ]}
+          groups={normalizedEntityGroups}
           onEntityClick={onEntitySearch}
         />
       </ReportSection>
@@ -536,14 +656,14 @@ function ReportDetail({
             <div className="space-y-1.5 text-sm text-foreground/85">
               <p>
                 {t("deep_analysis.quality.duplicate_ratio")}:{" "}
-                {Math.round((report.report?.quality.duplicateRatio ?? 0) * 100)}%
+                {Math.round(getDuplicateRatio(report) * 100)}%
               </p>
               <p>
                 {t("deep_analysis.quality.duplicate_count")}: {duplicateCount}
               </p>
               <p>
                 {t("deep_analysis.quality.noisy_memories")}:{" "}
-                {report.report?.quality.noisyMemoryCount ?? 0}
+                {getNoisyMemoryCount(report)}
               </p>
               {(report.report?.quality.coverageGaps ?? []).map((item) => (
                 <p key={item} className="text-soft-foreground">{item}</p>
