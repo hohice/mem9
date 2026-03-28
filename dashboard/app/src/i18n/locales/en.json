@@ -341,8 +341,17 @@
       "duplicate_count": "Duplicate memories",
       "noisy_memories": "Low-quality memories",
       "download_cleanup": "Download duplicate cleanup CSV",
+      "delete_duplicates": "Delete duplicate memories",
+      "delete_success": "Deleted {{count}} duplicate memories.",
+      "delete_partial": "Deleted {{deleted}} duplicate memories. {{failed}} could not be deleted.",
+      "delete_failed": "Failed to delete duplicate memories.",
       "download_hint": "The exported CSV only contains duplicate memories to delete. Canonical memories are not included.",
       "download_failed": "Failed to download duplicate cleanup CSV."
+    },
+    "report_actions": {
+      "delete": "Delete report",
+      "delete_confirm": "Delete this Memory Analysis report? This only removes the saved report and its generated artifacts.",
+      "delete_failed": "Failed to delete the analysis report."
     },
     "status": {
       "QUEUED": "Queued",

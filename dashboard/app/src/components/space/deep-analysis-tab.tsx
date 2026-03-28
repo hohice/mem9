@@ -1,18 +1,34 @@
 import { useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   Brain,
-  CheckCircle2,
   Clock3,
+  Database,
   Download,
+  Layers,
+  Lightbulb,
   Loader2,
+  ShieldCheck,
   Sparkles,
+  Trash2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { analysisApi, AnalysisApiError } from "@/api/analysis-client";
 import { useDeepAnalysisReports } from "@/api/deep-analysis-queries";
+import { getSourceMemoriesQueryKey } from "@/api/source-memories";
+import { DeepAnalysisOverlay } from "@/components/space/deep-analysis-overlay";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import type {
   DeepAnalysisDiscoveryCard,
@@ -20,7 +36,6 @@ import type {
   DeepAnalysisEvidenceHighlight,
   DeepAnalysisRelationship,
   DeepAnalysisReportDetail,
-  DeepAnalysisReportListItem,
 } from "@/types/analysis";
 
 const TERMINAL_REPORT_STATUSES = new Set(["COMPLETED", "FAILED"]);
@@ -34,21 +49,23 @@ function formatDateTime(value: string, locale: string): string {
   }).format(new Date(value));
 }
 
-function statusVariant(status: DeepAnalysisReportListItem["status"]): "default" | "secondary" | "destructive" | "outline" {
-  if (status === "COMPLETED") return "default";
-  if (status === "FAILED") return "destructive";
-  if (status === "QUEUED") return "outline";
-  return "secondary";
-}
+function countDuplicateMemories(
+  report: DeepAnalysisReportDetail,
+  removedDuplicateIds: string[] = [],
+): number {
+  const removed = new Set(removedDuplicateIds);
+  const duplicateClusters = report.report?.quality.duplicateClusters ?? [];
 
-function countDuplicateMemories(report: DeepAnalysisReportDetail): number {
-  if (typeof report.report?.quality.duplicateMemoryCount === "number") {
-    return report.report.quality.duplicateMemoryCount;
+  if (duplicateClusters.length > 0) {
+    return duplicateClusters.reduce(
+      (sum, cluster) =>
+        sum + cluster.duplicateMemoryIds.filter((memoryId) => !removed.has(memoryId)).length,
+      0,
+    );
   }
-  return (report.report?.quality.duplicateClusters ?? []).reduce(
-    (sum, cluster) => sum + cluster.duplicateMemoryIds.length,
-    0,
-  );
+
+  const reportedCount = report.report?.quality.duplicateMemoryCount ?? 0;
+  return Math.max(0, reportedCount - removed.size);
 }
 
 function triggerBlobDownload(blob: Blob, filename: string) {
@@ -62,15 +79,20 @@ function triggerBlobDownload(blob: Blob, filename: string) {
 
 function ReportSection({
   title,
+  icon,
   children,
 }: {
   title: string;
+  icon?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <section className="surface-card px-4 py-5 sm:px-6">
-      <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-soft-foreground">
-        {title}
+    <section className="surface-card px-5 py-6 sm:px-7">
+      <div className="mb-4 flex items-center gap-2.5 border-b border-border/50 pb-3">
+        {icon ?? <span className="h-4 w-[3px] rounded-full bg-primary/40" />}
+        <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-foreground/60">
+          {title}
+        </h3>
       </div>
       {children}
     </section>
@@ -88,14 +110,26 @@ function EntityGroupList({
     return null;
   }
 
+  const entityColors = [
+    "var(--facet-people)",
+    "var(--facet-about-you)",
+    "var(--facet-experiences)",
+    "var(--facet-plans)",
+    "var(--facet-preferences)",
+    "var(--facet-routines)",
+    "var(--facet-constraints)",
+    "var(--facet-other)",
+  ];
+
   return (
     <div>
       <div className="mb-2 text-xs font-semibold text-foreground/80">{label}</div>
       <div className="flex flex-wrap gap-2">
-        {items.map((item) => (
+        {items.map((item, idx) => (
           <div
             key={`${label}-${item.label}`}
             className="rounded-xl border border-border/70 bg-popover/70 px-3 py-2"
+            style={{ borderBottomWidth: 2, borderBottomColor: entityColors[idx % entityColors.length] }}
           >
             <div className="text-sm font-medium text-foreground">{item.label}</div>
             <div className="mt-1 text-[11px] text-soft-foreground">
@@ -117,18 +151,33 @@ function RelationshipList({
     return <p className="text-sm text-soft-foreground">No strong relationship signals yet.</p>;
   }
 
+  const relationColors = [
+    "var(--facet-people)",
+    "var(--facet-about-you)",
+    "var(--facet-experiences)",
+    "var(--facet-plans)",
+    "var(--facet-preferences)",
+    "var(--facet-routines)",
+  ];
+
   return (
-    <div className="space-y-3">
+    <div className="grid gap-3 md:grid-cols-2">
       {items.map((item, index) => (
-        <div key={`${item.source}-${item.target}-${index}`} className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3">
+        <div
+          key={`${item.source}-${item.target}-${index}`}
+          className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3"
+          style={{ borderLeftWidth: 3, borderLeftColor: relationColors[index % relationColors.length] }}
+        >
           <div className="text-sm font-medium text-foreground">
-            {item.source} <span className="text-soft-foreground">{item.relation}</span> {item.target}
+            {item.source}{" "}
+            <span className="text-soft-foreground">{item.relation}</span>{" "}
+            {item.target}
           </div>
           <div className="mt-1 text-[11px] text-soft-foreground">
             Confidence {Math.round(item.confidence * 100)}%
           </div>
           {item.evidenceExcerpts.length > 0 && (
-            <div className="mt-2 text-sm text-foreground/85">
+            <div className="mt-2 text-sm text-foreground/85 line-clamp-2">
               {item.evidenceExcerpts[0]}
             </div>
           )}
@@ -138,23 +187,40 @@ function RelationshipList({
   );
 }
 
+const PERSONA_SECTION_COLORS: Record<string, string> = {
+  working_style: "var(--facet-experiences)",
+  preferences: "var(--facet-preferences)",
+  goals: "var(--facet-plans)",
+  constraints: "var(--facet-constraints)",
+  decision_signals: "var(--facet-about-you)",
+  notable_routines: "var(--facet-routines)",
+  contradictions: "var(--facet-people)",
+};
+
 function PersonaList({
   title,
+  colorKey,
   items,
 }: {
   title: string;
+  colorKey?: string;
   items: string[];
 }) {
   if (items.length === 0) {
     return null;
   }
 
+  const accentColor = (colorKey && PERSONA_SECTION_COLORS[colorKey]) || "var(--facet-other)";
+
   return (
-    <div>
-      <div className="mb-2 text-xs font-semibold text-foreground/80">{title}</div>
-      <div className="space-y-2 text-sm text-foreground/85">
+    <div className="rounded-lg border border-border/40 bg-popover/30 px-3.5 py-3">
+      <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-foreground/80">
+        <span className="inline-block size-2 rounded-full" style={{ backgroundColor: accentColor }} />
+        {title}
+      </div>
+      <div className="space-y-1.5 text-sm text-foreground/85">
         {items.map((item) => (
-          <p key={item}>{item}</p>
+          <p key={item} className="pl-4">{item}</p>
         ))}
       </div>
     </div>
@@ -175,9 +241,21 @@ function EvidenceList({
   return (
     <div>
       <div className="mb-2 text-xs font-semibold text-foreground/80">{title}</div>
-      <div className="space-y-3">
-        {items.map((item) => (
-          <div key={`${item.title}-${item.detail}`} className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3">
+      <div className="grid gap-3 md:grid-cols-2">
+        {items.map((item, idx) => (
+          <div
+            key={`${item.title}-${item.detail}`}
+            className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3"
+            style={{
+              borderTopWidth: 2,
+              borderTopColor: [
+                "var(--facet-about-you)",
+                "var(--facet-experiences)",
+                "var(--facet-plans)",
+                "var(--facet-preferences)",
+              ][idx % 4],
+            }}
+          >
             <div className="text-sm font-medium text-foreground">{item.title}</div>
             <p className="mt-2 text-sm leading-6 text-foreground/85">{item.detail}</p>
           </div>
@@ -199,10 +277,12 @@ function DiscoveryCardList({
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
       {items.map((item) => (
-        <div key={item.id} className="rounded-xl border border-border/70 bg-popover/70 px-4 py-4">
+        <div key={item.id} className="rounded-xl border border-border/70 border-t-2 border-t-primary/20 bg-popover/70 px-4 py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="text-sm font-semibold text-foreground">{item.title}</div>
-            <Badge variant="outline">{Math.round(item.confidence * 100)}%</Badge>
+            <Badge variant={item.confidence > 0.8 ? "default" : "outline"}>
+              {Math.round(item.confidence * 100)}%
+            </Badge>
           </div>
           <p className="mt-3 text-sm leading-6 text-foreground/85">{item.summary}</p>
         </div>
@@ -213,39 +293,55 @@ function DiscoveryCardList({
 
 function ReportDetail({
   report,
+  removedDuplicateIds,
   onDownloadDuplicates,
+  onDeleteDuplicates,
   isDownloadingDuplicates,
+  isDeletingDuplicates,
   downloadError,
+  deleteError,
+  deleteFeedback,
 }: {
   report: DeepAnalysisReportDetail;
+  removedDuplicateIds: string[];
   onDownloadDuplicates: () => Promise<void>;
+  onDeleteDuplicates: () => Promise<void>;
   isDownloadingDuplicates: boolean;
+  isDeletingDuplicates: boolean;
   downloadError: string | null;
+  deleteError: string | null;
+  deleteFeedback: string | null;
 }) {
   const { t, i18n } = useTranslation();
-  const duplicateCount = countDuplicateMemories(report);
+  const duplicateCount = countDuplicateMemories(report, removedDuplicateIds);
 
   return (
     <div className="space-y-4">
       <ReportSection title={t("deep_analysis.sections.overview")}>
         <div className="grid gap-3 sm:grid-cols-4">
-          <div className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3">
-            <div className="text-xl font-semibold text-foreground">
-              {report.memoryCount}
+          <div className="rounded-xl border border-border/70 border-l-2 border-l-primary/25 bg-popover/70 px-3 py-3">
+            <div className="flex items-center gap-2">
+              <Database className="size-3.5 text-soft-foreground" />
+              <div className="text-xl font-semibold text-foreground">
+                {report.memoryCount}
+              </div>
             </div>
             <div className="mt-1 text-[11px] text-soft-foreground">
               {t("deep_analysis.metrics.memories")}
             </div>
           </div>
-          <div className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3">
-            <div className="text-xl font-semibold text-foreground">
-              {report.report?.overview.deduplicatedMemoryCount ?? report.memoryCount}
+          <div className="rounded-xl border border-border/70 border-l-2 border-l-primary/25 bg-popover/70 px-3 py-3">
+            <div className="flex items-center gap-2">
+              <Layers className="size-3.5 text-soft-foreground" />
+              <div className="text-xl font-semibold text-foreground">
+                {report.report?.overview.deduplicatedMemoryCount ?? report.memoryCount}
+              </div>
             </div>
             <div className="mt-1 text-[11px] text-soft-foreground">
               {t("deep_analysis.metrics.deduplicated")}
             </div>
           </div>
-          <div className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3">
+          <div className="rounded-xl border border-border/70 border-l-2 border-l-primary/25 bg-popover/70 px-3 py-3">
             <div className="text-sm font-semibold text-foreground">
               {report.report?.overview.timeSpan.start
                 ? formatDateTime(report.report.overview.timeSpan.start, i18n.language)
@@ -255,7 +351,7 @@ function ReportDetail({
               {t("deep_analysis.metrics.start")}
             </div>
           </div>
-          <div className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3">
+          <div className="rounded-xl border border-border/70 border-l-2 border-l-primary/25 bg-popover/70 px-3 py-3">
             <div className="text-sm font-semibold text-foreground">
               {report.report?.overview.timeSpan.end
                 ? formatDateTime(report.report.overview.timeSpan.end, i18n.language)
@@ -269,36 +365,45 @@ function ReportDetail({
       </ReportSection>
 
       <ReportSection title={t("deep_analysis.sections.persona")}>
-        <p className="text-sm leading-6 text-foreground/90">
-          {report.report?.persona.summary ?? report.preview?.summary ?? t("deep_analysis.pending")}
-        </p>
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <div className="rounded-xl bg-primary/[0.04] px-4 py-3 dark:bg-primary/[0.06]">
+          <p className="text-sm leading-6 text-foreground/90">
+            {report.report?.persona.summary ?? report.preview?.summary ?? t("deep_analysis.pending")}
+          </p>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
           <PersonaList
             title={t("deep_analysis.persona.working_style")}
+            colorKey="working_style"
             items={report.report?.persona.workingStyle ?? []}
           />
           <PersonaList
             title={t("deep_analysis.persona.preferences")}
+            colorKey="preferences"
             items={report.report?.persona.preferences ?? []}
           />
           <PersonaList
             title={t("deep_analysis.persona.goals")}
+            colorKey="goals"
             items={report.report?.persona.goals ?? []}
           />
           <PersonaList
             title={t("deep_analysis.persona.constraints")}
+            colorKey="constraints"
             items={report.report?.persona.constraints ?? []}
           />
           <PersonaList
             title={t("deep_analysis.persona.decision_signals")}
+            colorKey="decision_signals"
             items={report.report?.persona.decisionSignals ?? []}
           />
           <PersonaList
             title={t("deep_analysis.persona.notable_routines")}
+            colorKey="notable_routines"
             items={report.report?.persona.notableRoutines ?? report.report?.persona.habits ?? []}
           />
           <PersonaList
             title={t("deep_analysis.persona.contradictions")}
+            colorKey="contradictions"
             items={report.report?.persona.contradictionsOrTensions ?? []}
           />
         </div>
@@ -316,16 +421,35 @@ function ReportDetail({
 
       <ReportSection title={t("deep_analysis.sections.themes")}>
         <div className="grid gap-3 md:grid-cols-2">
-          {(report.report?.themeLandscape.highlights ?? []).map((item) => (
+          {(report.report?.themeLandscape.highlights ?? []).map((item, idx) => (
             <div key={item.name} className="rounded-xl border border-border/70 bg-popover/70 px-3 py-3">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-sm font-medium text-foreground">{item.name}</div>
+                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  <span
+                    className="inline-block size-2 rounded-full"
+                    style={{
+                      backgroundColor: [
+                        "var(--facet-about-you)",
+                        "var(--facet-preferences)",
+                        "var(--facet-people)",
+                        "var(--facet-experiences)",
+                        "var(--facet-plans)",
+                        "var(--facet-routines)",
+                      ][idx % 6],
+                    }}
+                  />
+                  {item.name}
+                </div>
                 <Badge variant="outline">{item.count}</Badge>
               </div>
               <p className="mt-2 text-sm text-soft-foreground">{item.description}</p>
             </div>
           ))}
         </div>
+      </ReportSection>
+
+      <ReportSection title={t("deep_analysis.sections.relationships")}>
+        <RelationshipList items={report.report?.relationships ?? []} />
       </ReportSection>
 
       <ReportSection title={t("deep_analysis.sections.entities")}>
@@ -338,12 +462,8 @@ function ReportDetail({
         </div>
       </ReportSection>
 
-      <ReportSection title={t("deep_analysis.sections.relationships")}>
-        <RelationshipList items={report.report?.relationships ?? []} />
-      </ReportSection>
-
       <div className="grid gap-4 xl:grid-cols-2">
-        <ReportSection title={t("deep_analysis.sections.quality")}>
+        <ReportSection title={t("deep_analysis.sections.quality")} icon={<ShieldCheck className="size-3.5 text-primary/50" />}>
           <div className="space-y-3 text-sm text-foreground/85">
             <p>
               {t("deep_analysis.quality.duplicate_ratio")}:{" "}
@@ -359,38 +479,70 @@ function ReportDetail({
             {(report.report?.quality.coverageGaps ?? []).map((item) => (
               <p key={item} className="text-soft-foreground">{item}</p>
             ))}
-            {duplicateCount > 0 && (
-              <div className="pt-1">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    void onDownloadDuplicates();
-                  }}
-                  disabled={isDownloadingDuplicates}
-                  className="gap-2"
-                >
-                  {isDownloadingDuplicates ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <Download className="size-4" />
-                  )}
-                  {t("deep_analysis.quality.download_cleanup")}
-                </Button>
-                <p className="mt-2 text-xs leading-5 text-soft-foreground">
-                  {t("deep_analysis.quality.download_hint")}
-                </p>
+            {(duplicateCount > 0 || deleteFeedback || deleteError) && (
+              <div className="space-y-3 pt-1">
+                {duplicateCount > 0 && (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          void onDownloadDuplicates();
+                        }}
+                        disabled={isDownloadingDuplicates || isDeletingDuplicates}
+                        className="gap-2"
+                      >
+                        {isDownloadingDuplicates ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Download className="size-4" />
+                        )}
+                        {t("deep_analysis.quality.download_cleanup")}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        onClick={() => {
+                          void onDeleteDuplicates();
+                        }}
+                        disabled={isDeletingDuplicates || isDownloadingDuplicates}
+                        className="gap-2"
+                      >
+                        {isDeletingDuplicates ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-4" />
+                        )}
+                        {t("deep_analysis.quality.delete_duplicates")}
+                      </Button>
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-soft-foreground">
+                      {t("deep_analysis.quality.download_hint")}
+                    </p>
+                  </>
+                )}
                 {downloadError && (
                   <p className="mt-2 text-xs text-destructive">{downloadError}</p>
+                )}
+                {deleteError && (
+                  <p className="text-xs text-destructive">{deleteError}</p>
+                )}
+                {deleteFeedback && !deleteError && (
+                  <p className="text-xs text-emerald-500">{deleteFeedback}</p>
                 )}
               </div>
             )}
           </div>
         </ReportSection>
 
-        <ReportSection title={t("deep_analysis.sections.recommendations")}>
-          <div className="space-y-2 text-sm text-foreground/85">
-            {(report.report?.recommendations ?? []).map((item) => (
-              <p key={item}>{item}</p>
+        <ReportSection title={t("deep_analysis.sections.recommendations")} icon={<Lightbulb className="size-3.5 text-primary/50" />}>
+          <div className="space-y-2.5">
+            {(report.report?.recommendations ?? []).map((item, idx) => (
+              <div key={item} className="flex items-start gap-3 text-sm text-foreground/85">
+                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
+                  {idx + 1}
+                </span>
+                <p>{item}</p>
+              </div>
             ))}
           </div>
         </ReportSection>
@@ -406,9 +558,16 @@ export function DeepAnalysisTab({
   spaceId: string;
   active: boolean;
 }) {
+  const queryClient = useQueryClient();
   const { t, i18n } = useTranslation();
   const [downloadingReportId, setDownloadingReportId] = useState<string | null>(null);
+  const [deletingReportId, setDeletingReportId] = useState<string | null>(null);
+  const [deletingWholeReportId, setDeletingWholeReportId] = useState<string | null>(null);
+  const [deleteReportTarget, setDeleteReportTarget] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteFeedback, setDeleteFeedback] = useState<string | null>(null);
+  const [removedDuplicateIdsByReport, setRemovedDuplicateIdsByReport] = useState<Record<string, string[]>>({});
   const {
     reports,
     selectedReport,
@@ -420,9 +579,9 @@ export function DeepAnalysisTab({
     isCreating,
     createReport,
   } = useDeepAnalysisReports(spaceId, active);
-  const hasActiveReport = reports.some(
+  const hasActiveReport = isCreating || (!isLoading && reports.some(
     (report) => !TERMINAL_REPORT_STATUSES.has(report.status),
-  );
+  ));
 
   const handleCreateReport = async () => {
     clearInlineError();
@@ -438,6 +597,8 @@ export function DeepAnalysisTab({
     }
 
     setDownloadError(null);
+    setDeleteError(null);
+    setDeleteFeedback(null);
     setDownloadingReportId(selectedReport.id);
     try {
       const blob = await analysisApi.downloadDeepAnalysisDuplicatesCsv(spaceId, selectedReport.id);
@@ -453,8 +614,80 @@ export function DeepAnalysisTab({
     }
   };
 
+  const handleDeleteDuplicates = async () => {
+    if (!selectedReport) {
+      return;
+    }
+
+    setDeleteError(null);
+    setDeleteFeedback(null);
+    setDownloadError(null);
+    setDeletingReportId(selectedReport.id);
+    try {
+      const result = await analysisApi.deleteDeepAnalysisDuplicates(spaceId, selectedReport.id);
+      setRemovedDuplicateIdsByReport((current) => {
+        const existing = current[selectedReport.id] ?? [];
+        return {
+          ...current,
+          [selectedReport.id]: [...new Set([...existing, ...result.deletedMemoryIds])],
+        };
+      });
+      setDeleteFeedback(
+        result.failedMemoryIds.length > 0
+          ? t("deep_analysis.quality.delete_partial", {
+            deleted: result.deletedCount,
+            failed: result.failedMemoryIds.length,
+          })
+          : t("deep_analysis.quality.delete_success", {
+            count: result.deletedCount,
+          }),
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["space", spaceId, "memories"] }),
+        queryClient.invalidateQueries({ queryKey: ["space", spaceId, "stats"] }),
+        queryClient.invalidateQueries({ queryKey: getSourceMemoriesQueryKey(spaceId) }),
+      ]);
+    } catch (error) {
+      setDeleteError(
+        error instanceof AnalysisApiError
+          ? error.message
+          : t("deep_analysis.quality.delete_failed"),
+      );
+    } finally {
+      setDeletingReportId(null);
+    }
+  };
+
+  const confirmDeleteReport = async (reportId: string) => {
+    setDeleteReportTarget(null);
+    setDeleteError(null);
+    setDeleteFeedback(null);
+    setDownloadError(null);
+    setDeletingWholeReportId(reportId);
+    try {
+      await analysisApi.deleteDeepAnalysisReport(spaceId, reportId);
+      const nextReportId = reports.find((report) => report.id !== reportId)?.id ?? null;
+      if (selectedReportId === reportId) {
+        setSelectedReportId(nextReportId);
+      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["space", spaceId, "deepAnalysis", "reports"] }),
+        queryClient.invalidateQueries({ queryKey: ["space", spaceId, "deepAnalysis", "report", reportId] }),
+      ]);
+    } catch (error) {
+      toast.error(
+        error instanceof AnalysisApiError
+          ? error.message
+          : t("deep_analysis.report_actions.delete_failed"),
+      );
+    } finally {
+      setDeletingWholeReportId(null);
+    }
+  };
+
   return (
     <div className="space-y-4">
+      <DeepAnalysisOverlay active={hasActiveReport} />
       <div className="surface-card flex flex-col gap-4 px-4 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div>
           <div className="flex items-center gap-2">
@@ -522,111 +755,131 @@ export function DeepAnalysisTab({
           <div className="space-y-3">
             {reports.map((report) => {
               const selected = report.id === selectedReportId;
+              const allowDelete = TERMINAL_REPORT_STATUSES.has(report.status);
               return (
-                <button
+                <div
                   key={report.id}
-                  type="button"
-                  onClick={() => {
-                    setDownloadError(null);
-                    setSelectedReportId(report.id);
-                  }}
                   className={`surface-card w-full px-4 py-4 text-left transition-colors sm:px-5 ${
                     selected ? "ring-1 ring-primary/35" : ""
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDownloadError(null);
+                        setDeleteError(null);
+                        setDeleteFeedback(null);
+                        setSelectedReportId(report.id);
+                      }}
+                      className="min-w-0 flex-1 text-left"
+                    >
                       <div className="text-sm font-semibold text-foreground">
                         {formatDateTime(report.requestedAt, i18n.language)}
                       </div>
                       <div className="mt-1 text-xs text-soft-foreground">
                         {report.memoryCount} {t("deep_analysis.memories_suffix")}
                       </div>
-                    </div>
-                    <Badge variant={statusVariant(report.status)}>{t(`deep_analysis.status.${report.status}`)}</Badge>
+                    </button>
+                    {allowDelete && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => {
+                          setDeleteReportTarget(report.id);
+                        }}
+                        disabled={deletingWholeReportId === report.id}
+                        aria-label={t("deep_analysis.report_actions.delete")}
+                        className="size-8 shrink-0 text-soft-foreground hover:text-destructive"
+                      >
+                        {deletingWholeReportId === report.id ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-4" />
+                        )}
+                      </Button>
+                    )}
                   </div>
-
-                  {report.preview?.summary && (
-                    <p className="mt-3 text-sm leading-6 text-foreground/85">
-                      {report.preview.summary}
-                    </p>
-                  )}
 
                   {!report.completedAt && (
                     <div className="mt-3">
                       <Progress value={report.progressPercent} />
                     </div>
                   )}
-                </button>
+                </div>
               );
             })}
           </div>
 
           {selectedReport && (
             <div className="space-y-4">
-              <div className="surface-card px-4 py-5 sm:px-6">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-xl font-semibold text-foreground">
-                        {t("deep_analysis.detail_title")}
-                      </h3>
-                      {selectedReport.status === "COMPLETED" && (
-                        <CheckCircle2 className="size-4 text-emerald-500" />
-                      )}
-                    </div>
-                    <p className="mt-2 text-sm text-soft-foreground">
-                      {t("deep_analysis.generated_at", {
-                        value: formatDateTime(selectedReport.requestedAt, i18n.language),
-                      })}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={statusVariant(selectedReport.status)}>
-                      {t(`deep_analysis.status.${selectedReport.status}`)}
-                    </Badge>
-                    <Badge variant="outline">
-                      {t(`deep_analysis.stage.${selectedReport.stage}`)}
-                    </Badge>
-                  </div>
-                </div>
-
-                {selectedReport.status !== "COMPLETED" && (
-                  <div className="mt-4">
-                    <Progress value={selectedReport.progressPercent} />
-                    <p className="mt-2 text-xs text-soft-foreground">
-                      {t("deep_analysis.processing")}
-                    </p>
-                  </div>
-                )}
-
-                {selectedReport.errorMessage && (
-                  <div className="mt-4 rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-3 text-sm text-foreground/85">
-                    {selectedReport.errorMessage}
-                  </div>
-                )}
-              </div>
-
               {selectedReport.report ? (
                 <ReportDetail
                   report={selectedReport}
+                  removedDuplicateIds={removedDuplicateIdsByReport[selectedReport.id] ?? []}
                   onDownloadDuplicates={handleDownloadDuplicates}
+                  onDeleteDuplicates={handleDeleteDuplicates}
                   isDownloadingDuplicates={downloadingReportId === selectedReport.id}
+                  isDeletingDuplicates={deletingReportId === selectedReport.id}
                   downloadError={downloadError}
+                  deleteError={deleteError}
+                  deleteFeedback={deleteFeedback}
                 />
               ) : (
                 <div className="surface-card px-4 py-8 text-center sm:px-6">
-                  <p className="text-sm text-soft-foreground">
+                  {selectedReport.status !== "FAILED" && (
+                    <div className="mx-auto mt-4 max-w-xl">
+                      <Progress value={selectedReport.progressPercent} />
+                    </div>
+                  )}
+                  <p className="mt-4 text-sm text-soft-foreground">
                     {selectedReport.status === "FAILED"
                       ? t("deep_analysis.failed_body")
-                      : t("deep_analysis.pending")}
+                      : t("deep_analysis.loading")}
                   </p>
+                  {selectedReport.errorMessage && (
+                    <div className="mx-auto mt-4 max-w-2xl rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-3 text-sm text-foreground/85">
+                      {selectedReport.errorMessage}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           )}
         </div>
       )}
+
+      <Dialog open={deleteReportTarget !== null} onOpenChange={(open) => { if (!open) setDeleteReportTarget(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t("deep_analysis.report_actions.delete")}</DialogTitle>
+            <DialogDescription>
+              {t("deep_analysis.report_actions.delete_confirm")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteReportTarget(null)}
+            >
+              {t("delete.cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (deleteReportTarget) {
+                  void confirmDeleteReport(deleteReportTarget);
+                }
+              }}
+            >
+              {t("delete.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
