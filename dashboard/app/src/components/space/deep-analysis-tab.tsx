@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { TFunction } from "i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -31,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import type {
+  DeepAnalysisDuplicateCleanupStatus,
   DeepAnalysisDiscoveryCard,
   DeepAnalysisEntityGroup,
   DeepAnalysisEvidenceHighlight,
@@ -40,6 +42,7 @@ import type {
 } from "@/types/analysis";
 
 const TERMINAL_REPORT_STATUSES = new Set(["COMPLETED", "FAILED"]);
+const ACTIVE_DUPLICATE_CLEANUP_STATUSES = new Set(["QUEUED", "RUNNING"]);
 
 function formatDateTime(value: string, locale: string): string {
   return new Intl.DateTimeFormat(locale, {
@@ -174,6 +177,60 @@ function countDuplicateMemories(
 
   const reportedCount = report.report?.quality.duplicateMemoryCount ?? 0;
   return Math.max(0, reportedCount - removed.size);
+}
+
+function getDuplicateCleanupStatus(
+  report: DeepAnalysisReportDetail,
+): DeepAnalysisDuplicateCleanupStatus | null {
+  return report.preview?.duplicateCleanup ?? null;
+}
+
+function isDuplicateCleanupPending(
+  cleanup: DeepAnalysisDuplicateCleanupStatus | null | undefined,
+): boolean {
+  return !!cleanup && ACTIVE_DUPLICATE_CLEANUP_STATUSES.has(cleanup.status);
+}
+
+function getDuplicateCleanupFeedback(
+  cleanup: DeepAnalysisDuplicateCleanupStatus | null,
+  t: TFunction,
+): { tone: "success" | "error" | "muted"; message: string } | null {
+  if (!cleanup) {
+    return null;
+  }
+
+  if (cleanup.status === "QUEUED" || cleanup.status === "RUNNING") {
+    return {
+      tone: "muted",
+      message: t("deep_analysis.quality.delete_running", {
+        count: cleanup.totalCount,
+      }),
+    };
+  }
+
+  if (cleanup.status === "FAILED") {
+    return {
+      tone: "error",
+      message: cleanup.errorMessage
+        ? `${t("deep_analysis.quality.delete_failed")} ${cleanup.errorMessage}`
+        : t("deep_analysis.quality.delete_failed"),
+    };
+  }
+
+  return cleanup.failedCount > 0
+    ? {
+      tone: "success",
+      message: t("deep_analysis.quality.delete_partial", {
+        deleted: cleanup.deletedCount,
+        failed: cleanup.failedCount,
+      }),
+    }
+    : {
+      tone: "success",
+      message: t("deep_analysis.quality.delete_success", {
+        count: cleanup.deletedCount,
+      }),
+    };
 }
 
 function triggerBlobDownload(blob: Blob, filename: string) {
@@ -486,6 +543,9 @@ function ReportDetail({
   onEntitySearch?: (query: string) => void;
 }) {
   const { t, i18n } = useTranslation();
+  const duplicateCleanup = getDuplicateCleanupStatus(report);
+  const duplicateCleanupFeedback = getDuplicateCleanupFeedback(duplicateCleanup, t);
+  const duplicateCleanupPending = isDuplicateCleanupPending(duplicateCleanup);
   const duplicateCount = countDuplicateMemories(report, removedDuplicateIds);
   const overviewTimeSpan = getOverviewTimeSpan(report);
   const themeHighlights = normalizeThemeHighlights(report.report?.themeLandscape);
@@ -674,6 +734,15 @@ function ReportDetail({
               {deleteError && (
                 <p className="text-xs text-destructive">{deleteError}</p>
               )}
+              {duplicateCleanupFeedback?.tone === "error" && !deleteError && (
+                <p className="text-xs text-destructive">{duplicateCleanupFeedback.message}</p>
+              )}
+              {duplicateCleanupFeedback?.tone === "muted" && !deleteError && (
+                <p className="text-xs text-soft-foreground">{duplicateCleanupFeedback.message}</p>
+              )}
+              {duplicateCleanupFeedback?.tone === "success" && !deleteError && (
+                <p className="text-xs text-emerald-500">{duplicateCleanupFeedback.message}</p>
+              )}
               {deleteFeedback && !deleteError && (
                 <p className="text-xs text-emerald-500">{deleteFeedback}</p>
               )}
@@ -702,10 +771,10 @@ function ReportDetail({
                   onClick={() => {
                     void onDeleteDuplicates();
                   }}
-                  disabled={isDeletingDuplicates || isDownloadingDuplicates}
+                  disabled={isDeletingDuplicates || isDownloadingDuplicates || duplicateCleanupPending}
                   className="h-8 gap-1.5 text-xs"
                 >
-                  {isDeletingDuplicates ? (
+                  {isDeletingDuplicates || duplicateCleanupPending ? (
                     <Loader2 className="size-3.5 animate-spin" />
                   ) : (
                     <Trash2 className="size-3.5" />
@@ -752,7 +821,7 @@ export function DeepAnalysisTab({
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteFeedback, setDeleteFeedback] = useState<string | null>(null);
-  const [removedDuplicateIdsByReport, setRemovedDuplicateIdsByReport] = useState<Record<string, string[]>>({});
+  const handledCleanupSignatureRef = useRef<string | null>(null);
   const {
     reports,
     selectedReport,
@@ -767,6 +836,42 @@ export function DeepAnalysisTab({
   const hasActiveReport = isCreating || (!isLoading && reports.some(
     (report) => !TERMINAL_REPORT_STATUSES.has(report.status),
   ));
+
+  useEffect(() => {
+    const cleanup = selectedReport?.preview?.duplicateCleanup;
+    if (!selectedReport || !cleanup || (cleanup.status !== "COMPLETED" && cleanup.status !== "FAILED")) {
+      return;
+    }
+
+    const signature = [
+      selectedReport.id,
+      cleanup.status,
+      cleanup.completedAt ?? "",
+      cleanup.deletedCount,
+      cleanup.failedCount,
+    ].join(":");
+
+    if (handledCleanupSignatureRef.current === signature) {
+      return;
+    }
+
+    handledCleanupSignatureRef.current = signature;
+    setDeleteFeedback(null);
+    if (cleanup.status === "FAILED") {
+      setDeleteError(
+        cleanup.errorMessage
+          ? `${t("deep_analysis.quality.delete_failed")} ${cleanup.errorMessage}`
+          : t("deep_analysis.quality.delete_failed"),
+      );
+      return;
+    }
+
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["space", spaceId, "memories"] }),
+      queryClient.invalidateQueries({ queryKey: ["space", spaceId, "stats"] }),
+      queryClient.invalidateQueries({ queryKey: getSourceMemoriesQueryKey(spaceId) }),
+    ]);
+  }, [queryClient, selectedReport, spaceId, t]);
 
   const handleCreateReport = async () => {
     clearInlineError();
@@ -810,27 +915,18 @@ export function DeepAnalysisTab({
     setDeletingReportId(selectedReport.id);
     try {
       const result = await analysisApi.deleteDeepAnalysisDuplicates(spaceId, selectedReport.id);
-      setRemovedDuplicateIdsByReport((current) => {
-        const existing = current[selectedReport.id] ?? [];
-        return {
-          ...current,
-          [selectedReport.id]: [...new Set([...existing, ...result.deletedMemoryIds])],
-        };
-      });
       setDeleteFeedback(
-        result.failedMemoryIds.length > 0
-          ? t("deep_analysis.quality.delete_partial", {
-            deleted: result.deletedCount,
-            failed: result.failedMemoryIds.length,
+        result.duplicateCleanup.status === "COMPLETED"
+          ? t("deep_analysis.quality.delete_success", {
+            count: result.duplicateCleanup.deletedCount,
           })
-          : t("deep_analysis.quality.delete_success", {
-            count: result.deletedCount,
+          : t("deep_analysis.quality.delete_started", {
+            count: result.duplicateCleanup.totalCount,
           }),
       );
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["space", spaceId, "memories"] }),
-        queryClient.invalidateQueries({ queryKey: ["space", spaceId, "stats"] }),
-        queryClient.invalidateQueries({ queryKey: getSourceMemoriesQueryKey(spaceId) }),
+        queryClient.invalidateQueries({ queryKey: ["space", spaceId, "deepAnalysis", "reports"] }),
+        queryClient.invalidateQueries({ queryKey: ["space", spaceId, "deepAnalysis", "report", selectedReport.id] }),
       ]);
     } catch (error) {
       setDeleteError(
@@ -941,6 +1037,7 @@ export function DeepAnalysisTab({
             {reports.map((report) => {
               const selected = report.id === selectedReportId;
               const allowDelete = TERMINAL_REPORT_STATUSES.has(report.status);
+              const duplicateCleanupPending = isDuplicateCleanupPending(report.preview?.duplicateCleanup);
               return (
                 <div
                   key={report.id}
@@ -980,7 +1077,7 @@ export function DeepAnalysisTab({
                       onClick={() => {
                         setDeleteReportTarget(report.id);
                       }}
-                      disabled={deletingWholeReportId === report.id}
+                      disabled={deletingWholeReportId === report.id || duplicateCleanupPending}
                       aria-label={t("deep_analysis.report_actions.delete")}
                       className="size-7 shrink-0 text-soft-foreground hover:text-destructive"
                     >
@@ -1001,7 +1098,7 @@ export function DeepAnalysisTab({
               {selectedReport.report ? (
                 <ReportDetail
                   report={selectedReport}
-                  removedDuplicateIds={removedDuplicateIdsByReport[selectedReport.id] ?? []}
+                  removedDuplicateIds={selectedReport.preview?.duplicateCleanup?.deletedMemoryIds ?? []}
                   onDownloadDuplicates={handleDownloadDuplicates}
                   onDeleteDuplicates={handleDeleteDuplicates}
                   isDownloadingDuplicates={downloadingReportId === selectedReport.id}

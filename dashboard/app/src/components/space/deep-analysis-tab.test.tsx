@@ -9,9 +9,18 @@ const mocks = vi.hoisted(() => ({
   downloadDeepAnalysisDuplicatesCsv: vi.fn(async () => new Blob(["duplicateMemoryId\nmem_2\n"], { type: "text/csv" })),
   deleteDeepAnalysisDuplicates: vi.fn(async () => ({
     reportId: "dar_completed",
-    deletedCount: 2,
-    deletedMemoryIds: ["mem_2", "mem_3"],
-    failedMemoryIds: [],
+    duplicateCleanup: {
+      status: "QUEUED",
+      requestedAt: "2026-03-29T00:00:00Z",
+      startedAt: null,
+      completedAt: null,
+      totalCount: 2,
+      deletedCount: 0,
+      failedCount: 0,
+      deletedMemoryIds: [],
+      failedMemoryIds: [],
+      errorMessage: null,
+    },
   })),
   deleteDeepAnalysisReport: vi.fn(async () => ({
     reportId: "dar_completed",
@@ -313,7 +322,7 @@ describe("DeepAnalysisTab", () => {
 
     await waitFor(() => {
       expect(mocks.deleteDeepAnalysisDuplicates).toHaveBeenCalledWith("space-1", "dar_completed");
-      expect(screen.getByText("Deleted 2 duplicate memories.")).toBeInTheDocument();
+      expect(screen.getByText("Started deleting 2 duplicate memories in the background.")).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Delete report" }));
