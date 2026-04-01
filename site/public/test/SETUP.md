@@ -91,6 +91,14 @@ Install command:
 openclaw plugins install @mem9/mem9
 ```
 
+Preflight failure rule:
+
+- If install fails because the plugin already exists locally, classify that as a stale local mem9 install residue issue.
+- Treat a leftover local extension directory such as `~/.openclaw/extensions/mem9` as local uninstall residue, not as a reconnect or API-key problem.
+- In that case, stop before config edits or restart and use `TROUBLESHOOTING.md` from the same directory.
+- Do not improvise a new install branch after the dry-run.
+- A second approval is only acceptable if the original disclosed scope did not already cover local mem9 cleanup.
+
 ### Required Post-Approval Notice
 
 Immediately after the single approval, and before running install, config edits, or restart, send a clear notice.
@@ -279,6 +287,7 @@ Reconnect is successful only if all of the following are true:
 - The final active mem9 credential is still `USER_PROVIDED_MEM9_API_KEY`
 - A transient immediately-after-restart host status of `enabled (plugin mem9) · unavailable` is not failure by itself if the silent re-check succeeds without user action
 - Empty memory results are acceptable
+- If install never completed because a stale local mem9 directory blocked `openclaw plugins install @mem9/mem9`, reconnect has not started yet. Treat that as a local cleanup failure and use `TROUBLESHOOTING.md` instead of continuing to config write or restart.
 
 ### Create-New Success Criteria
 
